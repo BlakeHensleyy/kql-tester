@@ -153,7 +153,3 @@ export LOGS_WORKSPACE_ID="your-workspace-id"
 python kql-tester.py -d rule.yml -tT query-back-search -tF
 ```
 export LOGS_WORKSPACE_ID="your-workspace-id"
-
-# Run tests
-python kql-tester.py -d rule.yml -tT query-back-search -tF
-```
