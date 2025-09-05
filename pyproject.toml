@@ -1,0 +1,32 @@
+[tool.poetry]
+name = "kql-tester"
+version = "0.1.0"
+description = "A series of scripts to be included in SOC automation for testing KQL."
+authors = ["Blake Hensley <22hensbl@gmail.com>"]
+license = "MIT"
+readme = "README.md"
+homepage = "https://github.com/BlakeHensleyy/KQLQueryTests"
+repository = "https://github.com/BlakeHensleyy/KQLQueryTests"
+keywords = ["KQL", "Azure Monitor", "Logs", "Testing"]
+packages = [{include = "kql_tester"}]
+
+[tool.poetry.scripts]
+kql-tester = "kql_tester.main:main"
+
+[tool.poetry.dependencies]
+python = ">=3.8.1,<4.0"
+pandas = "^2.0.0"
+pyyaml = "^6.0"
+azure-monitor-query = "^1.0.0"
+azure-identity = "^1.13.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.0"
+pytest-mock = "^3.0"
+black = "^23.0"
+flake8 = "^6.0"
+mypy = "^1.0"
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
