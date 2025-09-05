@@ -23,7 +23,7 @@ ALERT_BACK_SEARCH_THRESHOLDS = {
     "High": 5
 }
 
-QUERY_BACK_SEARCH_THRESHOLDS = {
+QUERY_BACK_SEARCH_THRESHOLDS = { # Set all to the same number if you don't want it dynamic.
     "Informational": 80,
     "Low": 40,
     "Medium": 20,
@@ -341,12 +341,10 @@ try:
             for table in data:
                 truncated_rows = table.rows[:include_data]
                 formatted_data = []
-
-                # Process each row directly without pandas
                 for row in truncated_rows:
                     record = {col: val for col, val in zip(table.columns, row)}
 
-                    # Perform any additional sanitization if needed
+                    # Perform any sanitization if needed
                     cleaned_record = {
                         col: (None if pd.isna(val) else str(val) if isinstance(val, (dict, list)) else val)
                         for col, val in record.items()
@@ -399,7 +397,7 @@ except HttpResponseError as err:
     if include_data:
         error_results["data"] = []
 
-    # Read the existing YAML file if it exists
+    # Read the existing YAML file if it exists. This is for looped workflows.
     os.makedirs(os.path.dirname(output_file_path), exist_ok=True)
     try:
         with open(output_file_path, "r") as file:
