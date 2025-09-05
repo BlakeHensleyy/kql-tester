@@ -1,0 +1,4 @@
+pandas>=2.0.0,<3.0.0
+pyyaml>=6.0,<7.0
+azure-monitor-query>=1.0.0,<2.0.0
+azure-identity>=1.13.0,<2.0.0
