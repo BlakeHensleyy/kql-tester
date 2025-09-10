@@ -48,8 +48,8 @@ Available Test Types:
   results-diff            - Compares query results between current branch and source branch.
                             Fails if current query returns significantly more results.
                             
-  execution-efficiency    - Can be added as suffix to any test (e.g., query-back-search-execution-efficiency).
-                            Tests query performance against execution time thresholds.
+  execution-efficiency    - Tests query performance against execution time thresholds.
+                            Can be used standalone or with any other test type using --ExecutionEfficiency flag.
 """
 
 parser = argparse.ArgumentParser(
@@ -60,10 +60,11 @@ parser = argparse.ArgumentParser(
 parser.add_argument("-d", "--YamlPath", dest="YamlPath", required=True, help="YAML file containing the query field.")
 parser.add_argument("-tF", "--TimeFromFile", action=argparse.BooleanOptionalAction, help="To use the query time in the YAML file.")
 parser.add_argument("-t", "--QueryTime", dest="QueryTime", help="Provide the searchback time if TimeFromFile set to false. Provide in this format: 1d, 2h, 5m")
-parser.add_argument("-tT", "--TestType", dest="TestType", required=True, help="Test type: query-back-search, alert-back-search, results-diff, execution-efficiency. Add '-execution-efficiency' to any test for performance testing.")
+parser.add_argument("-tT", "--TestType", dest="TestType", required=True, help="Test type: query-back-search, alert-back-search, results-diff, execution-efficiency.")
+parser.add_argument("-eE", "--ExecutionEfficiency", action="store_true", help="Enable execution efficiency testing alongside the main test type.")
 parser.add_argument("-iD", "--IncludeData", dest="IncludeData", nargs="?", const=10, type=int, help="Include data in the output YAML file. Optionally specify the maximum number of rows to include (default is 10).")
 parser.add_argument("-sB", "--SourceBranch", dest="SourceBranch", default="main", help="Source branch for results-diff test type. Default is 'main'.")
-parser.add_argument("-o", "--OutputPath", dest="OutputPath", default="test_results/summary.yml", help="Path to the output YAML file.")
+parser.add_argument("-o", "--OutputPath", dest="OutputPath", default="test_results/results.yml", help="Path to the output YAML file.")
 
 args = parser.parse_args()
 
@@ -71,6 +72,7 @@ yaml_file_path = args.YamlPath
 time_from_file = args.TimeFromFile
 query_time = args.QueryTime
 test_type = args.TestType
+execution_efficiency = args.ExecutionEfficiency
 include_data = args.IncludeData
 source_branch = args.SourceBranch
 output_file_path = args.OutputPath
@@ -80,13 +82,8 @@ test_result = "None"
 if not test_type.startswith("results-diff") and args.SourceBranch != "main":
     print("::warning::SourceBranch argument is only applicable for results-diff test type. Ignoring.")
 
-# Determine if execution efficiency testing is enabled
-test_execution_efficiency = test_type.endswith("-execution-efficiency")
-if test_execution_efficiency:
-    # Remove the execution-efficiency suffix to get the base test type
-    base_test_type = test_type.replace("-execution-efficiency", "")
-else:
-    base_test_type = test_type
+# Set base test type (no more suffix parsing needed)
+base_test_type = test_type
 
 # Function to translate custom time format to timedelta arguments
 def translate_custom_duration(period):
@@ -171,7 +168,8 @@ except KeyError as e:
 
 # Determine the query time
 if time_from_file:
-    if yaml_data['kind'] != "NRT":
+    rule_kind = yaml_data.get('kind', 'Scheduled')
+    if rule_kind != "NRT":
         try:
             query_time = yaml_data.get('queryPeriod', None)
             if query_time is not None:
@@ -233,15 +231,6 @@ try:
     result_row_count = statistics['query']['datasetStatistics'][0]['tableRowCount']
     result_count = 0
 
-    # Run execution efficiency test if enabled
-    if test_execution_efficiency:
-        if query_execution_time < EXECUTION_TIME_THRESHOLDS["pass"]:
-            test_result = update_test_result(test_result, "PASS")
-        elif query_execution_time < EXECUTION_TIME_THRESHOLDS["warn"]:
-            test_result = update_test_result(test_result, f"WARN: Took {EXECUTION_TIME_THRESHOLDS['pass']}s+")
-        else:
-            test_result = update_test_result(test_result, f"FAIL: Took {EXECUTION_TIME_THRESHOLDS['warn']}s+")
-
     if base_test_type == "alert-back-search":
         # Access the first table, first row, and the second column (count_). If no data found then there were 0 alerts.
         alert_count = data[0].rows[0][1] if data and data[0].rows else 0
@@ -261,6 +250,15 @@ try:
             test_result = update_test_result(test_result, "PASS")
         else:
             test_result = update_test_result(test_result, "FAIL: Too many results")
+    elif base_test_type == "execution-efficiency":
+        # Handle standalone execution efficiency test
+        result_count = result_row_count
+        if query_execution_time < EXECUTION_TIME_THRESHOLDS["pass"]:
+            test_result = update_test_result(test_result, "PASS")
+        elif query_execution_time < EXECUTION_TIME_THRESHOLDS["warn"]:
+            test_result = update_test_result(test_result, f"WARN: Took {EXECUTION_TIME_THRESHOLDS['pass']}s+")
+        else:
+            test_result = update_test_result(test_result, f"FAIL: Took {EXECUTION_TIME_THRESHOLDS['warn']}s+")
     elif base_test_type == "results-diff":
         try:
             # Use Git to retrieve the YAML file from the specified source branch
@@ -329,7 +327,7 @@ try:
     # Prepare the results to be written to a YAML file
     results = {
         "rule_name": rule_name,
-        "test_type": test_type,
+        "test_type": base_test_type,
         "test_result": test_result,
         "query": f"{query}",
         "severity": severity,
@@ -359,6 +357,7 @@ try:
                 # Convert timestamps and append to results
                 results["data"].append(convert_timestamps(formatted_data))
 
+    # Read existing data and append base test result
     os.makedirs(os.path.dirname(output_file_path), exist_ok=True)  # Make if doesn't exist
     try:
         with open(output_file_path, "r") as file:
@@ -368,10 +367,34 @@ try:
 
     existing_data.append(results)
 
+    # Add execution efficiency result if enabled
+    if execution_efficiency:
+        # Determine execution efficiency test result
+        if query_execution_time < EXECUTION_TIME_THRESHOLDS["pass"]:
+            efficiency_result = "PASS"
+        elif query_execution_time < EXECUTION_TIME_THRESHOLDS["warn"]:
+            efficiency_result = f"WARN: Took {EXECUTION_TIME_THRESHOLDS['pass']}s+"
+        else:
+            efficiency_result = f"FAIL: Took {EXECUTION_TIME_THRESHOLDS['warn']}s+"
+
+        efficiency_test_result = {
+            "rule_name": rule_name,
+            "test_type": "execution-efficiency",
+            "test_result": efficiency_result,
+            "query": f"{query}",
+            "severity": severity,
+            "query_time": query_time,
+            "query_hash": statistics['query']['queryHash'],
+            "query_execution_time": query_execution_time,
+            "result_count": result_row_count
+        }
+        
+        existing_data.append(efficiency_test_result)
+
     with open(output_file_path, "w") as file:
         yaml.dump(existing_data, file, default_flow_style=False, sort_keys=False)
 
-    print("Test results successfully appended to test_results/summary.yml")
+    print(f"Test results successfully appended to {output_file_path}")
 
 except HttpResponseError as err:
     print("::error::A fatal error occurred while querying logs")
@@ -383,7 +406,7 @@ except HttpResponseError as err:
 
     error_results = {
         "rule_name": rule_name,
-        "test_type": test_type,
+        "test_type": base_test_type,
         "test_result": test_result,
         "query": f"{query}",
         "severity": severity,
