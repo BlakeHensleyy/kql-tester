@@ -133,8 +133,31 @@ jobs:
         while IFS= read -r file; do
           if [ -f "$file" ]; then
             echo "Testing file: $file"
-            python kql-tester.py -d "$file" -tT query-back-search-execution-efficiency -tF # Does the KQL compile and run? Is the run efficient?
-            python kql-tester.py -d "$file" -tT results-diff # Is the changed rule worse than before?
+            python kql-tester.py -d "$file" -tT query-back-search -eE -tF # Does the KQL compile and run? Is the run efficient?
+            python kql-tester.py -d "$file" -tT results-diff -tF # Is the changed rule worse than before?
           fi
         done < changed_files.txt
+    
+    ############# Steps after this point are optional and are for easy production usage ###############
+    # First checks that there were results in case of disabled/undeployed rules which are not kql tested.
+    - name: Pretty Display KQL Testing Results.
+      run: |       
+        if [ ! -f test_results/results.yml ]; then
+          echo "No results.yml found. Skipping test results formatting."
+        else
+          echo "Formatting test results... This process will fail if a test FAILed."
+          cd .github
+          python format-test-results.py
+          cat test-results.md >> $GITHUB_STEP_SUMMARY
+        fi
+
+    # Store test_results/results.yml as a job artifact (after formatting is done)
+    - name: Store Artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: test_results
+        path: |
+          test_results/results.yml
+          .github/test-results.md
+      continue-on-error: true
 ```
