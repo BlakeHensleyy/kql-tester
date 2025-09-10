@@ -4,19 +4,19 @@ KQL Quality Assurance tests... because no one likes false positives.
 Script assumes rule format is like https://github.com/Azure/Azure-Sentinel.
 ## Test Types
 **query-back-search**: Tests if a query returns too many results over a given time period. Uses severity-based thresholds to determine pass/fail. Can be customized to dynamically search over non-severity fields as well.
-**alert-back-search**: Tests if a detection rule has generated too many alerts. Helpful reviewing analytic rules in mass on a regular basis.
 **results-diff**: Compares query results between current branch and source branch. Fails if current query returns significantly more results. If the rule does not exist on the source branch (identified by file name) then it is assumed to be new and runs query-back-search.
 **execution-efficiency**: Can be added as suffix to any test (e.g., query-back-search-execution-efficiency). Tests query performance against execution time thresholds. Will warn if the query run-time is getting too long.
+**alert-back-search**: Tests if a detection rule has generated too many alerts. Helpful reviewing analytic rules in mass on a regular basis.
 ## Installation
 ```bash
-git clone https://github.com/BlakeHensleyy/KQLQueryTests.git
-cd KQLQueryTests
+git clone https://github.com/BlakeHensleyy/kql-tester.git
+cd kql-tester
 pip install -r requirements.txt
 ```
 
-## Usage
+### Basic Usage
 ```bash
-python kql-tester.py -d rule.yml -tT query-back-search -tF
+python kql-tester.py -d rule.yaml -tT query-back-search -tF
 ```
 
 ## Setup the log analytics API
@@ -26,47 +26,47 @@ python kql-tester.py -d rule.yml -tT query-back-search -tF
 
 3. Give the Application "Log Analytics Reader" role in the target Log Analytics Workspace IAM settings.
 
-4. Create environment variables:
-AZURE_CREDENTIALS
+4. Set the workspace ID environment variable:
+```bash
+# For Bash/Git Bash
+export LOGS_WORKSPACE_ID="your-workspace-id-here"
+
+# For PowerShell  
+$env:LOGS_WORKSPACE_ID="your-workspace-id-here"
 ```
-{
-  "clientId": "YOUR_CLIENT_ID",
-  "clientSecret": "YOUR_CLIENT_SECRET",
-  "subscriptionId": "YOUR_SUBSCRIPTION_ID",
-  "tenantId": "YOUR_TENANT_ID"
-}
-```
-LOGS_WORKSPACE_ID
-```
-40861252-b4f7-49ac-b361-b4d9015eb318
-```
-example^
 
 ## Authentication Setup
 
-`kql-tester` supports multiple authentication methods. Choose the one that works best for your environment:
+`kql-tester` uses Azure's `DefaultAzureCredential`, which automatically tries multiple authentication methods in order until one succeeds. This provides seamless authentication across different environments without additional configuration.
 
-### Option 1: Azure CLI (Recommended for local development)
+**Authentication methods tried automatically (in order):**
+1. **Environment variables** (Service Principal)
+2. **Managed Identity** (Azure-hosted environments)  
+3. **Azure CLI** (Local development)
+4. **Azure PowerShell** 
+5. **Interactive Browser** (Fallback)
+
+### For Local Development (Recommended)
 ```bash
-# Login with Azure CLI
+# Login with Azure CLI (easiest for local development)
 az login
 
 # Set workspace ID
 export LOGS_WORKSPACE_ID="your-workspace-id"
 ```
 
-### Option 2: Service Principal (Recommended for CI/CD)
+### For CI/CD Pipelines
 ```bash
-# Set environment variables
+# Set environment variables for Service Principal authentication
 export AZURE_CLIENT_ID="your-client-id"
 export AZURE_CLIENT_SECRET="your-client-secret" 
 export AZURE_TENANT_ID="your-tenant-id"
 export LOGS_WORKSPACE_ID="your-workspace-id"
 ```
 
-### Option 3: Managed Identity (For Azure-hosted environments)
+### For Azure-hosted Environments
 ```bash
-# Only need workspace ID - authentication handled automatically
+# Only need workspace ID - Managed Identity handles authentication automatically
 export LOGS_WORKSPACE_ID="your-workspace-id"
 ```
 
@@ -77,7 +77,7 @@ export LOGS_WORKSPACE_ID="your-workspace-id"
    az ad app create --display-name "kql-tester"
    ```
 
-2. **Create Service Principal (if using Option 2):**
+2. **Create Service Principal (for CI/CD):**
    ```bash
    az ad sp create-for-rbac --name "kql-tester" --role "Log Analytics Reader" --scopes "/subscriptions/{subscription-id}/resourceGroups/{rg-name}/providers/Microsoft.OperationalInsights/workspaces/{workspace-name}"
    ```
@@ -88,6 +88,7 @@ export LOGS_WORKSPACE_ID="your-workspace-id"
    ```
 
 ## GitHub Actions Example
+This is an example of how `kql-tester` could be used in production. Included in the actions is every query-based test that `kql-tester` is capable of.
 
 ```yaml
 name: KQL Tests
@@ -128,28 +129,12 @@ jobs:
         AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
         AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
         LOGS_WORKSPACE_ID: ${{ secrets.LOGS_WORKSPACE_ID }}
-      run: |
+      run: | 
         while IFS= read -r file; do
           if [ -f "$file" ]; then
             echo "Testing file: $file"
-            python kql-tester.py -d "$file" -tT query-back-search -tF
+            python kql-tester.py -d "$file" -tT query-back-search-execution-efficiency -tF # Does the KQL compile and run? Is the run efficient?
+            python kql-tester.py -d "$file" -tT results-diff # Is the changed rule worse than before?
           fi
         done < changed_files.txt
 ```
-
-## Local Development
-
-For local development, the easiest approach is using Azure CLI:
-
-```bash
-# One-time setup
-git clone https://github.com/BlakeHensleyy/KQLQueryTests.git
-cd KQLQueryTests
-pip install -r requirements.txt
-az login
-export LOGS_WORKSPACE_ID="your-workspace-id"
-
-# Run tests
-python kql-tester.py -d rule.yml -tT query-back-search -tF
-```
-export LOGS_WORKSPACE_ID="your-workspace-id"
