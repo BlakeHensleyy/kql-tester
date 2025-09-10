@@ -17,17 +17,21 @@ EXECUTION_TIME_THRESHOLDS = {
 
 # Configuration: Result count thresholds by severity
 ALERT_BACK_SEARCH_THRESHOLDS = {
-    "Informational": 60,
-    "Low": 30,
-    "Medium": 15,
-    "High": 5
+    "Informational": 30,
+    "Low": 10,
+    "Medium": 5,
+    "High": 1
 }
 
+# The main flaw with query backtesting is that it is evaluating based on the number of returned rows. 
+# IE there could be 10 resulting rows per triggered alert. That doesn't mean there are 10 FPs, but likely 1.
+# TODO: Calculate the estimated alert number using queryPeriod and queryFrequency to fix this.
+# This is why the default thresholds are higher than alert threshold
 QUERY_BACK_SEARCH_THRESHOLDS = { # Set all to the same number if you don't want it dynamic.
-    "Informational": 80,
-    "Low": 40,
-    "Medium": 20,
-    "High": 8
+    "Informational": 100,
+    "Low": 50,
+    "Medium": 15,
+    "High": 5
 }
 
 # Configuration: Results diff threshold
@@ -127,6 +131,7 @@ def update_test_result(current_result, new_result):
     return current_result
 
 # Initialize the Azure Monitor Logs client.
+# Has falback auth method order of: env variables > Managed Identity > az CLI > Azure PWSH > Browser.
 credential = DefaultAzureCredential()
 client = LogsQueryClient(credential)
 
