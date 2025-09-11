@@ -26,9 +26,9 @@ def format_test_results():
     output_lines = []
     
     # Count results by status
-    pass_count = len([r for r in results if r['test_result'].startswith('PASS')])
-    warn_count = len([r for r in results if r['test_result'].startswith('WARN')])
-    fail_count = len([r for r in results if r['test_result'].startswith('FAIL')])
+    pass_count = len([r for r in results if r.get('test_status', '') == 'PASS'])
+    warn_count = len([r for r in results if r.get('test_status', '') == 'WARN'])
+    fail_count = len([r for r in results if r.get('test_status', '') == 'FAIL'])
     total_count = len(results)
 
     output_lines.append("## Test Results Summary")
@@ -36,29 +36,29 @@ def format_test_results():
     output_lines.append(f"⚠️  **WARNINGS:** {warn_count}")  
     output_lines.append(f"❌ **FAILED:** {fail_count}")
     output_lines.append("")
-    output_lines.append("📋 Check artifacts for detailed analysis in test_results/results.yml")
+    output_lines.append("📋 Check artifacts for detailed analysis and details in test_results/results.yml")
     output_lines.append("")
 
     output_lines.append("## Test Details")
-    output_lines.append(f"{'Rule':<75} | {'Result':<25} | {'Type':<10} | {'Severity':<8} | {'Count':<8}")
-    output_lines.append(f"{'-'*75} | {'-'*25} | {'-'*10} | {'-'*8} | {'-'*8}")
+    output_lines.append(f"{'Rule':<75} | {'Result':<8} | {'Type':<15} | {'Severity':<8} | {'Count':<8}")
+    output_lines.append(f"{'-'*75} | {'-'*8} | {'-'*15} | {'-'*8} | {'-'*8}")
 
     for test in results:
         rule = test.get('rule_name', 'Unknown')[:74]
-        result = test.get('test_result', 'N/A')
+        result = test.get('test_status', 'N/A')
         test_type = test.get('test_type', 'N/A')
         severity = test.get('severity', 'N/A')
         count = test.get('result_count', 0)
 
         # Add status emoji
-        if result.startswith('FAIL'):
-            result_display = f"❌ {result[:25]}"
-        elif result.startswith('WARN'):
-            result_display = f"⚠️  {result[:25]}"
+        if result == 'FAIL':
+            result_display = f"❌ {result}"
+        elif result == 'WARN':
+            result_display = f"⚠️ {result}"
         else:
-            result_display = f"✅ {result[:25]}"
+            result_display = f"✅ {result}"
 
-        output_lines.append(f"{rule:<75} | {result_display:<12} | {test_type:<10} | {severity:<8} | {count:<8}")
+        output_lines.append(f"{rule:<75} | {result_display:<8} | {test_type:<15} | {severity:<8} | {count:<8}")
 
     output_lines.append("")
     
