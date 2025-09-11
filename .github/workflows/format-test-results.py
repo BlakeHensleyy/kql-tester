@@ -4,7 +4,7 @@ import sys
 
 # Configuration
 WRITE_TO_FILE = True
-RESULTS_FILE = '/home/runner/work/kql-tester/kql-tester/test_results/results.yml'
+RESULTS_FILE = os.environ.get('RESULTS_FILE', os.path.join('test_results', 'results.yml'))
 OUTPUT_FILE = "test-results.md"
 
 def format_test_results():
