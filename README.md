@@ -5,8 +5,11 @@ Script assumes rule format is like https://github.com/Azure/Azure-Sentinel.
 
 ## Test Types
 **query-back-search**: Tests if a query returns too many results over a given time period. Uses severity-based thresholds to determine pass/fail. Can be customized to dynamically search over non-severity fields as well.
+
 **results-diff**: Compares query results between current branch and source branch. Fails if current query returns significantly more results. If the rule does not exist on the source branch (identified by file name) then it is assumed to be new and runs query-back-search.
+
 **execution-efficiency**: Tests query performance against execution time thresholds. Will warn if the query run-time is getting too long. Can be used standalone or combined with other test types using the `--ExecutionEfficiency` flag.
+
 **alert-back-search**: Tests if a detection rule has generated too many alerts. Helpful reviewing analytic rules in mass on a regular basis.
 ## Installation
 ```bash
