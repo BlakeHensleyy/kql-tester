@@ -4,7 +4,7 @@ import argparse
 import pandas as pd
 import re
 import yaml
-from datetime import timedelta
+from datetime import timedelta, datetime, timezone
 from azure.monitor.query import LogsQueryClient, LogsQueryStatus
 from azure.core.exceptions import HttpResponseError
 from azure.identity import DefaultAzureCredential
@@ -23,7 +23,7 @@ ALERT_BACK_SEARCH_THRESHOLDS = {
     "High": 1
 }
 
-# The main flaw with query backtesting is that it is evaluating based on the number of returned rows. 
+# The main flaw with query backtesting in KQL is that it is evaluating based on the number of returned rows. 
 # IE there could be 10 resulting rows per triggered alert. That doesn't mean there are 10 FPs, but likely 1.
 # TODO: Calculate the estimated alert number using queryPeriod and queryFrequency to fix this.
 # This is why the default thresholds are higher than alert threshold
@@ -34,8 +34,13 @@ QUERY_BACK_SEARCH_THRESHOLDS = { # Set all to the same number if you don't want 
     "High": 5
 }
 
-# Configuration: Results diff threshold
-RESULTS_DIFF_MULTIPLIER = 2    # Fail if new query has over 2X results compared to source branch
+# Configuration: Results diff thresholds by severity
+RESULTS_DIFF_THRESHOLDS = {
+    "Informational": 5.0,  # Allow up to 5x increase
+    "Low": 3.0,           # Allow up to 3x increase
+    "Medium": 2.0,        # Allow up to 2x increase
+    "High": 1.5          # Only allow 50% increase
+}
 
 test_descriptions = """
 Available Test Types:
@@ -48,8 +53,8 @@ Available Test Types:
   results-diff            - Compares query results between current branch and source branch.
                             Fails if current query returns significantly more results.
                             
-  execution-efficiency    - Can be added as suffix to any test (e.g., query-back-search-execution-efficiency).
-                            Tests query performance against execution time thresholds.
+  execution-efficiency    - Tests query performance against execution time thresholds.
+                            Can be used standalone or with any other test type using --ExecutionEfficiency flag.
 """
 
 parser = argparse.ArgumentParser(
@@ -60,10 +65,11 @@ parser = argparse.ArgumentParser(
 parser.add_argument("-d", "--YamlPath", dest="YamlPath", required=True, help="YAML file containing the query field.")
 parser.add_argument("-tF", "--TimeFromFile", action=argparse.BooleanOptionalAction, help="To use the query time in the YAML file.")
 parser.add_argument("-t", "--QueryTime", dest="QueryTime", help="Provide the searchback time if TimeFromFile set to false. Provide in this format: 1d, 2h, 5m")
-parser.add_argument("-tT", "--TestType", dest="TestType", required=True, help="Test type: query-back-search, alert-back-search, results-diff, execution-efficiency. Add '-execution-efficiency' to any test for performance testing.")
+parser.add_argument("-tT", "--TestType", dest="TestType", required=True, help="Test type: query-back-search, alert-back-search, results-diff, execution-efficiency.")
+parser.add_argument("-eE", "--ExecutionEfficiency", action="store_true", help="Enable execution efficiency testing alongside the main test type.")
 parser.add_argument("-iD", "--IncludeData", dest="IncludeData", nargs="?", const=10, type=int, help="Include data in the output YAML file. Optionally specify the maximum number of rows to include (default is 10).")
 parser.add_argument("-sB", "--SourceBranch", dest="SourceBranch", default="main", help="Source branch for results-diff test type. Default is 'main'.")
-parser.add_argument("-o", "--OutputPath", dest="OutputPath", default="test_results/summary.yml", help="Path to the output YAML file.")
+parser.add_argument("-o", "--OutputPath", dest="OutputPath", default="test_results/results.yml", help="Path to the output YAML file.")
 
 args = parser.parse_args()
 
@@ -71,22 +77,16 @@ yaml_file_path = args.YamlPath
 time_from_file = args.TimeFromFile
 query_time = args.QueryTime
 test_type = args.TestType
+execution_efficiency = args.ExecutionEfficiency
 include_data = args.IncludeData
 source_branch = args.SourceBranch
 output_file_path = args.OutputPath
-test_result = "None"
+test_status = None
+test_details = None
 
 # Validate SourceBranch is only used with results-diff
-if not test_type.startswith("results-diff") and args.SourceBranch != "main":
+if test_type != "results-diff" and source_branch != "main":
     print("::warning::SourceBranch argument is only applicable for results-diff test type. Ignoring.")
-
-# Determine if execution efficiency testing is enabled
-test_execution_efficiency = test_type.endswith("-execution-efficiency")
-if test_execution_efficiency:
-    # Remove the execution-efficiency suffix to get the base test type
-    base_test_type = test_type.replace("-execution-efficiency", "")
-else:
-    base_test_type = test_type
 
 # Function to translate custom time format to timedelta arguments
 def translate_custom_duration(period):
@@ -122,13 +122,6 @@ def str_presenter(dumper, data):
     return dumper.represent_scalar('tag:yaml.org,2002:str', data)
 
 yaml.add_representer(str, str_presenter)
-
-# Function to update test result based on precedence. This prevents WARN/FAIL from being overwritten.
-precedence = {"PASS": 1, "WARN": 2, "FAIL": 3, "unknown": 0}
-def update_test_result(current_result, new_result):
-    if precedence[new_result.split(":")[0]] > precedence[current_result.split(":")[0]]:
-        return new_result
-    return current_result
 
 # Initialize the Azure Monitor Logs client.
 # Has falback auth method order of: env variables > Managed Identity > az CLI > Azure PWSH > Browser.
@@ -171,7 +164,8 @@ except KeyError as e:
 
 # Determine the query time
 if time_from_file:
-    if yaml_data['kind'] != "NRT":
+    rule_kind = yaml_data.get('kind', 'Scheduled')
+    if rule_kind != "NRT":
         try:
             query_time = yaml_data.get('queryPeriod', None)
             if query_time is not None:
@@ -193,8 +187,8 @@ else:
         print("Error: Query time must be provided if TimeFromFile is set to False.")
         sys.exit(1)
 
-# If the test is alert-back-search, replace the query to find the number of alerts in the alotted time.
-if test_type.startswith("alert-back-search"):
+# If the test is alert-back-search, replace the query to find the number of alerts in the allotted time.
+if test_type == "alert-back-search":
     if not include_data:
         include_data = True
         print("--IncludeData option set to true because alert-back-search is used.")
@@ -204,7 +198,7 @@ if test_type.startswith("alert-back-search"):
 try:
     kwargs = eval(f"dict({query_time})")
     time_delta = timedelta(**kwargs)
-    # The timespan in the API request overrides any timeGenerated values in the KQL.
+    # Note: The timespan in the API request overrides any timeGenerated values in the KQL.
     response = client.query_workspace(
         workspace_id=logs_workspace_id,
         query=query,
@@ -215,93 +209,93 @@ try:
     if response.status == LogsQueryStatus.SUCCESS:
         data = response.tables
         statistics = response.statistics
-        test_result = "PASS"
+        test_status = "PASS"
+        test_details = None
     elif response.status == LogsQueryStatus.PARTIAL:
         error = response.partial_error
         data = response.partial_data
         statistics = response.statistics
         print(f"::warning::Query partially succeeded with error: {error}")
-        test_result = "WARN: Query Problems"
+        test_status = "WARN"
+        test_details = "Query Problems"
     else:
         error = response.partial_error
         data = response.partial_data
         statistics = response.statistics
         print(f"::error::Query failed with error: {error}")
-        test_result = "FAIL"
+        test_status = "FAIL"
+        test_details = "Query execution failed"
 
     query_execution_time = statistics['query']['executionTime']
     result_row_count = statistics['query']['datasetStatistics'][0]['tableRowCount']
     result_count = 0
 
-    # Run execution efficiency test if enabled
-    if test_execution_efficiency:
-        if query_execution_time < EXECUTION_TIME_THRESHOLDS["pass"]:
-            test_result = update_test_result(test_result, "PASS")
-        elif query_execution_time < EXECUTION_TIME_THRESHOLDS["warn"]:
-            test_result = update_test_result(test_result, f"WARN: Took {EXECUTION_TIME_THRESHOLDS['pass']}s+")
-        else:
-            test_result = update_test_result(test_result, f"FAIL: Took {EXECUTION_TIME_THRESHOLDS['warn']}s+")
-
-    if base_test_type == "alert-back-search":
-        # Access the first table, first row, and the second column (count_). If no data found then there were 0 alerts.
+    if test_type == "alert-back-search":
         alert_count = data[0].rows[0][1] if data and data[0].rows else 0
         result_count = alert_count
-        # Check against configured thresholds
         threshold = ALERT_BACK_SEARCH_THRESHOLDS.get(severity, 0)
         if alert_count <= threshold:
-            test_result = update_test_result(test_result, "PASS")
+            test_status = "PASS"
+            test_details = None
         else:
-            test_result = update_test_result(test_result, "FAIL: Too many alerts")
-    elif base_test_type == "query-back-search":
-        # Calculate number of results
+            test_status = "FAIL"
+            test_details = f"Too many alerts ({alert_count} > {threshold})"
+    elif test_type == "query-back-search":
         result_count = result_row_count
-        # Check against configured thresholds
         threshold = QUERY_BACK_SEARCH_THRESHOLDS.get(severity, 0)
         if result_count <= threshold:
-            test_result = update_test_result(test_result, "PASS")
+            test_status = "PASS"
+            test_details = None
         else:
-            test_result = update_test_result(test_result, "FAIL: Too many results")
-    elif base_test_type == "results-diff":
+            test_status = "FAIL"
+            test_details = f"Too many results ({result_count} > {threshold})"
+    elif test_type == "execution-efficiency":
+        result_count = result_row_count
+        if query_execution_time < EXECUTION_TIME_THRESHOLDS["pass"]:
+            test_status = "PASS"
+            test_details = None
+        elif query_execution_time < EXECUTION_TIME_THRESHOLDS["warn"]:
+            test_status = "WARN"
+            test_details = f"Took {query_execution_time:.1f}s (>{EXECUTION_TIME_THRESHOLDS['pass']}s)"
+        else:
+            test_status = "FAIL"
+            test_details = f"Took {query_execution_time:.1f}s (>{EXECUTION_TIME_THRESHOLDS['warn']}s)"
+    elif test_type == "results-diff":
         try:
             # Use Git to retrieve the YAML file from the specified source branch
             source_branch_file_path = f"{source_branch}_{os.path.basename(yaml_file_path)}"
             exit_code = os.system(f"git show {source_branch}:{yaml_file_path} > {source_branch_file_path}")
-        
             if exit_code != 0:
                 raise FileNotFoundError(f"File {yaml_file_path} does not exist in the '{source_branch}' branch.")
-        
-            # Load the YAML data from the source branch
             if os.path.exists(source_branch_file_path) and os.path.getsize(source_branch_file_path) > 0:
                 with open(source_branch_file_path, "r", encoding="utf-8") as source_file:
                     source_yaml_data = yaml.safe_load(source_file)
             else:
                 raise FileNotFoundError(f"Failed to retrieve valid data for {yaml_file_path} from the '{source_branch}' branch.")
-        
-            # Extract the query from the source branch YAML
             source_query = source_yaml_data.get("query", None)
             if source_query is None:
                 raise KeyError("Error: 'query' not found in the YAML file on the source branch.")
-
         except FileNotFoundError as e:
             print(f"::warning::{e}")
             print("::info::Switching to query-back-search test.")
-            base_test_type = "query-back-search"
+            test_type = "query-back-search"
             result_count = result_row_count
-
-            # Test is pretty loose because it is only for new ARs
             threshold = QUERY_BACK_SEARCH_THRESHOLDS.get(severity, 0)
             if result_count <= threshold:
-                test_result = update_test_result(test_result, "PASS")
+                test_status = "PASS"
+                test_details = None
             else:
-                test_result = update_test_result(test_result, "FAIL: Too many results")
-
+                test_status = "FAIL"
+                test_details = f"Too many results ({result_count} > {threshold})"
         except KeyError as e:
             print(f"::error::{e}")
-            test_result = "FAIL: Missing query in source branch YAML"
+            test_status = "FAIL"
+            test_details = "Missing query in source branch YAML"
         except Exception as e:
             print(f"::error::An unexpected error occurred: {e}")
-            test_result = "FAIL: Unable to fetch source branch query"
-
+            test_status = "FAIL"
+            test_details = "Unable to fetch source branch query"
+    
         # Run the query for the source branch version if available
         if 'source_query' in locals() and source_query:
             source_response = client.query_workspace(
@@ -315,28 +309,44 @@ try:
             # Calculate the difference between our results and the source branch's results
             results_diff = result_row_count - source_result_row_count
             result_count = f"{source_result_row_count}:{result_row_count}"
-    
-            # Determine the test result based on the difference. Fail if the new query has over RESULTS_DIFF_MULTIPLIER times as many results
+            
+            # Use 1 instead of 0 for ratio calculation if source was zero
+            calc_source_count = 1 if source_result_row_count == 0 else source_result_row_count
+            results_ratio = result_row_count / calc_source_count
+            threshold = RESULTS_DIFF_THRESHOLDS.get(severity, 2.0)
             if results_diff <= 0:
-                test_result = update_test_result(test_result, "PASS")
-            elif source_result_row_count * RESULTS_DIFF_MULTIPLIER < result_row_count:
-                test_result = update_test_result(test_result, f"FAIL: Over {RESULTS_DIFF_MULTIPLIER}X results")
+                test_status = "PASS"
+                test_details = None
+            elif source_result_row_count == 0:
+                if result_row_count > QUERY_BACK_SEARCH_THRESHOLDS.get(severity, 0):
+                    test_status = "FAIL"
+                    test_details = f"Query now returns {result_row_count} results (was 0)"
+                else:
+                    test_status = "WARN"
+                    test_details = f"Query now returns {result_row_count} results (was 0)"
+            elif results_ratio > threshold:
+                test_status = "FAIL"
+                test_details = f"{results_ratio:.1f}X results (>{threshold}X for {severity})"
             else:
-                test_result = update_test_result(test_result, f"WARN: New KQL has {results_diff} more results")
-    else:
-        test_result = update_test_result(test_result, "unknown")
+                test_status = "WARN"
+                test_details = f"New KQL has {results_diff} more results ({results_ratio:.1f}X)"
+        else:
+            test_status = "FAIL"
+            test_details = "Unknown test type"
 
     # Prepare the results to be written to a YAML file
     results = {
         "rule_name": rule_name,
         "test_type": test_type,
-        "test_result": test_result,
-        "query": f"{query}",
+        "test_status": test_status,
+        **({"test_details": test_details} if test_details is not None else {}),
+        "query": query,
         "severity": severity,
         "query_time": query_time,
         "query_hash": statistics['query']['queryHash'],
         "query_execution_time": query_execution_time,
-        "result_count": result_count
+        "result_count": result_count,
+        "test_run_time": datetime.now(timezone.utc).isoformat()
     }
 
     if include_data:
@@ -359,6 +369,7 @@ try:
                 # Convert timestamps and append to results
                 results["data"].append(convert_timestamps(formatted_data))
 
+    # Read existing data and append base test result
     os.makedirs(os.path.dirname(output_file_path), exist_ok=True)  # Make if doesn't exist
     try:
         with open(output_file_path, "r") as file:
@@ -368,10 +379,36 @@ try:
 
     existing_data.append(results)
 
+    # Add execution efficiency result if enabled
+    if execution_efficiency:
+        if query_execution_time < EXECUTION_TIME_THRESHOLDS["pass"]:
+            efficiency_status = "PASS"
+            efficiency_details = None
+        elif query_execution_time < EXECUTION_TIME_THRESHOLDS["warn"]:
+            efficiency_status = "WARN"
+            efficiency_details = f"Took {query_execution_time:.1f}s (>{EXECUTION_TIME_THRESHOLDS['pass']}s)"
+        else:
+            efficiency_status = "FAIL"
+            efficiency_details = f"Took {query_execution_time:.1f}s (>{EXECUTION_TIME_THRESHOLDS['warn']}s)"
+        efficiency_test_result = {
+            "rule_name": rule_name,
+            "test_type": "execution-efficiency",
+            "test_status": efficiency_status,
+            **({"test_details": efficiency_details} if efficiency_details is not None else {}),
+            "query": query,
+            "severity": severity,
+            "query_time": query_time,
+            "query_hash": statistics['query']['queryHash'],
+            "query_execution_time": query_execution_time,
+            "result_count": result_row_count,
+            "test_run_time": datetime.now(timezone.utc).isoformat()
+        }
+        existing_data.append(efficiency_test_result)
+
     with open(output_file_path, "w") as file:
         yaml.dump(existing_data, file, default_flow_style=False, sort_keys=False)
 
-    print("Test results successfully appended to test_results/summary.yml")
+    print(f"Test results successfully appended to {output_file_path}")
 
 except HttpResponseError as err:
     print("::error::A fatal error occurred while querying logs")
@@ -379,24 +416,26 @@ except HttpResponseError as err:
     print(f"Error Message: {err.message}")
     print(err)
 
-    test_result = "FAIL: Query Failed"
-
+    test_status = "FAIL"
+    test_details = "Query Failed"
     error_results = {
         "rule_name": rule_name,
         "test_type": test_type,
-        "test_result": test_result,
-        "query": f"{query}",
+        "test_status": test_status,
+        **({"test_details": test_details} if test_details is not None else {}),
+        "query": query,
         "severity": severity,
         "query_time": query_time,
         "statistics": {
-            "queryHash": "unknown",
+            "query_hash": "unknown",
             "query_execution_time": "unknown",
             "result_row_count": 0
         },
         "error": {
             "code": err.error.code,
             "message": err.message
-        }
+        },
+        "test_run_time": datetime.now(timezone.utc).isoformat()
     }
 
     if include_data:
