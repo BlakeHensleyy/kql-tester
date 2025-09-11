@@ -2,10 +2,11 @@
 KQL Quality Assurance tests... because no one likes false positives.
 
 Script assumes rule format is like https://github.com/Azure/Azure-Sentinel.
+
 ## Test Types
 **query-back-search**: Tests if a query returns too many results over a given time period. Uses severity-based thresholds to determine pass/fail. Can be customized to dynamically search over non-severity fields as well.
 **results-diff**: Compares query results between current branch and source branch. Fails if current query returns significantly more results. If the rule does not exist on the source branch (identified by file name) then it is assumed to be new and runs query-back-search.
-**execution-efficiency**: Can be added as suffix to any test (e.g., query-back-search-execution-efficiency). Tests query performance against execution time thresholds. Will warn if the query run-time is getting too long.
+**execution-efficiency**: Tests query performance against execution time thresholds. Will warn if the query run-time is getting too long. Can be used standalone or combined with other test types using the `--ExecutionEfficiency` flag.
 **alert-back-search**: Tests if a detection rule has generated too many alerts. Helpful reviewing analytic rules in mass on a regular basis.
 ## Installation
 ```bash
@@ -14,12 +15,59 @@ cd kql-tester
 pip install -r requirements.txt
 ```
 
-### Basic Usage
+### Basic Usage Examples
 ```bash
+# Test query efficiency using time from YAML file
 python kql-tester.py -d rule.yaml -tT query-back-search -tF
+
+# Test with custom time period and execution efficiency
+python kql-tester.py -d rule.yaml -tT query-back-search -t 7d -eE
+
+# Compare against a different branch
+python kql-tester.py -d rule.yaml -tT results-diff -tF -sB develop
+
+# Test alert generation with data included
+python kql-tester.py -d rule.yaml -tT alert-back-search -t 30d -iD 5
 ```
 
-## Setup the log analytics API
+## Output Format
+
+Test results are saved to a YAML file (default: `test_results/results.yml`) with the following structure:
+
+```yaml
+- rule_name: "Suspicious Registry Modification"
+  test_type: "query-back-search"
+  test_status: "PASS"  # or "WARN" or "FAIL"
+  test_details: "Too many results (25 > 15)"  # Only present for non-PASS results
+  query: "SecurityEvent | where EventID == 4688..."
+  severity: "Medium"
+  query_time: "days=7, hours=0, minutes=0"
+  query_hash: "abc123..."
+  query_execution_time: 2.34
+  result_count: 15
+  test_run_time: "2025-01-15T10:30:45.123456+00:00"
+  data: [...]  # Only if --IncludeData is used
+```
+
+**Field Descriptions:**
+- `test_status`: PASS, WARN, or FAIL
+- `test_details`: Only present when status is not PASS, contains failure/warning reason
+- `result_count`: Number of results returned by query (or "old:new" format for results-diff)
+- `query_execution_time`: Time in seconds the query took to execute
+- `test_run_time`: UTC timestamp when the test was executed
+- `data`: Sample query results (if --IncludeData flag used)
+
+## Environment Variables
+
+**Required:**
+- `LOGS_WORKSPACE_ID`: Your Log Analytics Workspace ID
+
+**Optional (for Service Principal auth):**
+- `AZURE_CLIENT_ID`: Application (client) ID
+- `AZURE_CLIENT_SECRET`: Client secret
+- `AZURE_TENANT_ID`: Directory (tenant) ID
+
+## Setup the Log Analytics API
 1. Register a new Azure Application in "App Registrations". 
 
 2. Create a new secret in the new application.
@@ -133,14 +181,14 @@ jobs:
         while IFS= read -r file; do
           if [ -f "$file" ]; then
             echo "Testing file: $file"
-            python kql-tester.py -d "$file" -tT query-back-search -eE -tF # Does the KQL compile and run? Is the run efficient?
-            python kql-tester.py -d "$file" -tT results-diff -tF # Is the changed rule worse than before?
+            python kql-tester.py -d "$file" -tT query-back-search -eE -tF  # Does the KQL compile and run? Is it efficient?
+            python kql-tester.py -d "$file" -tT results-diff -tF          # Is the changed rule worse than before?
           fi
         done < changed_files.txt
     
     ############# Steps after this point are optional and are for easy production usage ###############
     # First checks that there were results in case of disabled/undeployed rules which are not kql tested.
-    - name: Pretty Display KQL Testing Results.
+    - name: Format and Display Test Results
       run: |       
         if [ ! -f test_results/results.yml ]; then
           echo "No results.yml found. Skipping test results formatting."
@@ -151,13 +199,10 @@ jobs:
           cat test-results.md >> $GITHUB_STEP_SUMMARY
         fi
 
-    # Store test_results/results.yml as a job artifact (after formatting is done)
-    - name: Store Artifacts
+    - name: Store Test Results as Artifacts
       uses: actions/upload-artifact@v4
       with:
         name: test_results
-        path: |
-          test_results/results.yml
-          .github/test-results.md
+        path: test_results/results.yml
       continue-on-error: true
 ```
