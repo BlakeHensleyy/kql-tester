@@ -4,7 +4,7 @@ import argparse
 import pandas as pd
 import re
 import yaml
-from datetime import timedelta
+from datetime import timedelta, datetime, timezone
 from azure.monitor.query import LogsQueryClient, LogsQueryStatus
 from azure.core.exceptions import HttpResponseError
 from azure.identity import DefaultAzureCredential
@@ -345,7 +345,8 @@ try:
         "query_time": query_time,
         "query_hash": statistics['query']['queryHash'],
         "query_execution_time": query_execution_time,
-        "result_count": result_count
+        "result_count": result_count,
+        "test_run_time": datetime.now(timezone.utc).isoformat()
     }
 
     if include_data:
@@ -399,7 +400,8 @@ try:
             "query_time": query_time,
             "query_hash": statistics['query']['queryHash'],
             "query_execution_time": query_execution_time,
-            "result_count": result_row_count
+            "result_count": result_row_count,
+            "test_run_time": datetime.now(timezone.utc).isoformat()
         }
         existing_data.append(efficiency_test_result)
 
@@ -432,7 +434,8 @@ except HttpResponseError as err:
         "error": {
             "code": err.error.code,
             "message": err.message
-        }
+        },
+        "test_run_time": datetime.now(timezone.utc).isoformat()
     }
 
     if include_data:
